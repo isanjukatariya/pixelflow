@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fine-Pixel Anime Pirate Ship Voyage - Stable Build</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        html, body {
+            width: 100%;
+            height: 100%;
+            background-color: #030508;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .matrix-viewport {
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        canvas {
+            background-color: #05080c;
+            box-shadow: 0 0 60px rgba(0, 0, 0, 0.9);
+        }
+    </style>
+</head>
+<body>
+
+    <div class="matrix-viewport">
+        <canvas id="finePirateCanvas"></canvas>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('finePirateCanvas');
+        const ctx = canvas.getContext('2d');
+
+        const WIDTH = 1024;
+        const HEIGHT = 450;
+        canvas.width = WIDTH;
+        canvas.height = HEIGHT;
+
+        const DOT_SPACING = 5;        
+        const MAX_RADIUS = 2.3;       
+        const TRAVEL_SPEED = 52.0;    
+        const WAVE_BASE_Y = 320;      
+
+        let lastTime = 0;
+        let timeline = 0;
+        let shipX = -150;             
+
+        function getWaveHeightAt(x, time) {
+            return WAVE_BASE_Y + 
+                   Math.sin(x * 0.013 - time * 1.8) * 18 + 
+                   Math.sin(x * 0.028 + time * 2.6) * 6 + 
+                   Math.cos(x * 0.05 + time * 1.2) * 2;
+        }
+
+        function distanceToSegment(px, py, x1, y1, x2, y2) {
+            const dx = x2 - x1;
+            const dy = y2 - y1;
+            const lineMagSq = dx * dx + dy * dy;
+            if (lineMagSq === 0) return Math.sqrt((px - x1) * (px - x1) + (py - y1) * (py - y1));
+            let scalar = ((px - x1) * dx + (py - y1) * dy) / lineMagSq;
+            scalar = Math.max(0, Math.min(1, scalar));
+            const projX = x1 + scalar * dx;
+            const projY = y1 + scalar * dy;
+            const rx = px - projX;
+            const ry = py - projY;
+            return Math.sqrt(rx * rx + ry * ry);
+        }
+
+        function pointInPolygon(px, py, vertices) {
+            let inside = false;
+            for (let i = 0, j = vertices.length - 1; i < vertices.length; j = i++) {
+                const xi = vertices[i].x, yi = vertices[i].y;
+                const xj = vertices[j].x, yj = vertices[j].y;
+                if (((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi)) {
+                    inside = !inside;
+                }
+            }
+            return inside;
+        }
+
+        function calculateSceneMaskWeight(x, y, time, sx, sy, cosA, sinA) {
+            const waveTopY = getWaveHeightAt(x, time);
+            if (y > waveTopY) {
+                const depthFactor = Math.min(1, (y - waveTopY) / 20);
+                return { weight: 0.45 + depthFactor * 0.55, type: 'water' };
+            }
+
+            const localX = (x - sx) * cosA + (y - sy) * sinA;
+            const localY = -(x - sx) * sinA + (y - sy) * cosA;
+
+            const isInsideHull = (localX >= -35 && localX <= 26 && localY >= -12 && localY <= 10) ||
+                                 (localX > 26 && localX <= 38 && localY >= (localX - 26) * 0.33 - 12 && localY <= 10) ||
+                                 (localX >= -40 && localX < -35 && localY >= -6 && localY <= 10);
+                                 
+            if (isInsideHull) return { weight: 1.0, type: 'ship' };
+
+            const tfPoint = (lx, ly) => {
+                return {
+                    x: sx + (lx * cosA - ly * sinA),
+                    y: sy + (lx * sinA + ly * cosA)
+                };
+            };
+
+            const dxHead = localX - 42;
+            const dyHead = localY - (-10);
+            if (dxHead * dxHead + dyHead * dyHead < 36) return { weight: 1.0, type: 'ship' };
+
+            const dxWheel = localX - (-3);
+            const dyWheel = localY - 2;
+            const wheelDistSq = dxWheel * dxWheel + dyWheel * dyWheel;
+            if (wheelDistSq < 81 && wheelDistSq > 16) {
+                const angleToCell = Math.atan2(dyWheel, dxWheel);
+                if (Math.abs(Math.sin(angleToCell * 4)) > 0.5) return { weight: 0.9, type: 'ship' };
+            }
+
+            // Expanded and explicit line variables to avoid nested index reference breaks
+            const m1s = tfPoint(1, -6),    m1e = tfPoint(1, -70);
+            if (distanceToSegment(x, y, m1s.x, m1s.y, m1e.x, m1e.y) < 2.6) return { weight: 1.0, type: 'ship' };
+            
+            const m2s = tfPoint(-26, -18), m2e = tfPoint(-26, -48);
+            if (distanceToSegment(x, y, m2s.x, m2s.y, m2e.x, m2e.y) < 1.8) return { weight: 1.0, type: 'ship' };
+            
+            const m3s = tfPoint(-16, -62), m3e = tfPoint(18, -62);
+            if (distanceToSegment(x, y, m3s.x, m3s.y, m3e.x, m3e.y) < 1.2) return { weight: 1.0, type: 'ship' };
+            
+            const m4s = tfPoint(-21, -34), m4e = tfPoint(23, -34);
+            if (distanceToSegment(x, y, m4s.x, m4s.y, m4e.x, m4e.y) < 1.4) return { weight: 1.0, type: 'ship' };
+            
+            const m5s = tfPoint(-34, -42), m5e = tfPoint(-18, -42);
+            if (distanceToSegment(x, y, m5s.x, m5s.y, m5e.x, m5e.y) < 1.0) return { weight: 1.0, type: 'ship' };
+            
+            const m6s = tfPoint(35, -9),   m6e = tfPoint(52, -22);
+            if (distanceToSegment(x, y, m6s.x, m6s.y, m6e.x, m6e.y) < 1.2) return { weight: 1.0, type: 'ship' };
+
+            const flagPoints = [tfPoint(-26, -48), tfPoint(-38, -45), tfPoint(-35, -37), tfPoint(-26, -40)];
+            if (pointInPolygon(x, y, flagPoints)) return { weight: 0.85, type: 'ship' };
+
+            const rearSail = [tfPoint(-26, -42), tfPoint(-33, -26), tfPoint(-26, -26)];
+            if (pointInPolygon(x, y, rearSail)) return { weight: 0.8, type: 'ship' };
+
+            const mainSailPoints = [tfPoint(-16, -60), tfPoint(18, -60), tfPoint(22, -36), tfPoint(8, -28), tfPoint(-20, -36)];
+            if (pointInPolygon(x, y, mainSailPoints)) {
+                const dxSym = localX - 1;
+                const dySym = localY - (-46);
+                if (dxSym * dxSym + dySym * dySym < 81) {
+                    if (Math.abs(dxSym - dySym) < 2.5 || Math.abs(dxSym + dySym) < 2.5) {
+                        return { weight: 0.2, type: 'symbol' }; 
+                    }
+                }
+                return { weight: 0.9, type: 'ship' };
+            }
+
+            return { weight: 0, type: 'empty' };
+        }
+
+        function renderLagFreeVoyage(timestamp) {
+            if (!lastTime) lastTime = timestamp;
+            const deltaSeconds = (timestamp - lastTime) / 1000;
+            lastTime = timestamp;
+
+            const validatedDelta = Math.min(deltaSeconds, 0.05); 
+            timeline += validatedDelta;
+
+            shipX += TRAVEL_SPEED * validatedDelta;
+            if (shipX > WIDTH + 150) shipX = -150;
+
+            const centerWaterY = getWaveHeightAt(shipX, timeline);
+            const sternWaterY = getWaveHeightAt(shipX - 25, timeline);
+            const bowWaterY = getWaveHeightAt(shipX + 25, timeline);
+
+            const pitchRotation = Math.atan2(bowWaterY - sternWaterY, 50);
+            const buoyancyShipY = centerWaterY - 3; 
+
+            const cosA = Math.cos(pitchRotation);
+            const sinA = Math.sin(pitchRotation);
+
+            ctx.fillStyle = '#040609';
+            ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+            for (let x = DOT_SPACING / 2; x < WIDTH; x += DOT_SPACING) {
+                const waveTopY = getWaveHeightAt(x, timeline);
+
+                for (let y = DOT_SPACING / 2; y < HEIGHT; y += DOT_SPACING) {
+                    
+                    if (y > waveTopY) {
+                        const depthFactor = Math.min(1, (y - waveTopY) / 20);
+                        const radius = MAX_RADIUS * (0.45 + depthFactor * 0.55);
+                        ctx.beginPath();
+                        ctx.arc(x, y, radius, 0, Math.PI * 2);
+                        ctx.fillStyle = `rgba(80, 150, 215, ${0.35 + (0.45 + depthFactor * 0.55) * 0.65})`;
+                        ctx.fill();
+                        continue;
+                    }
+
+                    const cell = calculateSceneMaskWeight(x, y, timeline, shipX, buoyancyShipY, cosA, sinA);
+
+                    if (cell.weight > 0.12) {
+                        const circleRadius = MAX_RADIUS * cell.weight;
+                        ctx.beginPath();
+                        ctx.arc(x, y, circleRadius, 0, Math.PI * 2);
+
+                        if (cell.type === 'ship') {
+                            ctx.fillStyle = `rgba(245, 248, 255, ${0.55 + cell.weight * 0.45})`; 
+                        } else if (cell.type === 'symbol') {
+                            ctx.fillStyle = `rgba(5, 8, 12, 0.15)`; 
+                        }
+                        ctx.fill();
+                    } else {
+                        ctx.fillStyle = 'rgba(255, 255, 255, 0.015)';
+                        ctx.fillRect(x - 0.5, y - 0.5, 1, 1);
+                    }
+                }
+            }
+
+            requestAnimationFrame(renderLagFreeVoyage);
+        }
+
+        requestAnimationFrame(renderLagFreeVoyage);
+    </script>
+</body>
+</html>
